@@ -1,12 +1,15 @@
+import gzip
 import json
 import logging
 import os
 import sys
 import time
+import zlib
 from datetime import datetime, timezone
 from decimal import Decimal
 from getpass import getpass
 from http.client import HTTPConnection, HTTPException
+from io import BytesIO
 from ipaddress import IPv4Address
 from queue import Full, Queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +37,7 @@ def parse_measurement(form):
 
 
 WITHINGS_HOST = "scalews.withings.net"
+RAW_LOG_LIMIT = 65536
 PUBLIC_DNS_URL = "https://cloudflare-dns.com/dns-query"
 HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -92,7 +96,7 @@ class ScaleHandler(BaseHTTPRequestHandler):
             return
 
         if self.server.log_raw:
-            logging.info("Scale %s %s %r", self.command, self.path, raw)
+            logging.info("Scale → Withings %s %s %r", self.command, self.path, raw)
         try:
             self.upstream.putrequest(self.command, self.path, skip_host=True,
                                      skip_accept_encoding=True)
@@ -110,19 +114,22 @@ class ScaleHandler(BaseHTTPRequestHandler):
             self.send_error(502)
             return
 
+        raw_response = bytearray() if self.server.log_raw else None
         try:
             with response:
-                self.relay_response(response)
+                self.relay_response(response, raw_response)
         except (HTTPException, OSError) as error:
             logging.warning("Withings response interrupted (%s)", type(error).__name__)
             self.upstream.close()
             self.close_connection = True
             return
+        if raw_response is not None:
+            log_raw_response(self.path, response, raw_response)
         if (200 <= response.status < 300 and self.command == "POST"
                 and urlsplit(self.path).path == "/cgi-bin/measure"):
             self.mirror(raw)
 
-    def relay_response(self, response):
+    def relay_response(self, response, raw_response=None):
         status = response.status
         no_body = self.command == "HEAD" or status in (204, 304)
         chunked = not no_body and (response.chunked or response.length is None)
@@ -141,6 +148,8 @@ class ScaleHandler(BaseHTTPRequestHandler):
 
         if not no_body:
             while chunk := response.read1(65536):
+                if raw_response is not None and len(raw_response) <= RAW_LOG_LIMIT:
+                    raw_response.extend(chunk[:RAW_LOG_LIMIT + 1 - len(raw_response)])
                 if chunked:
                     self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                 else:
@@ -176,6 +185,21 @@ class ScaleHandler(BaseHTTPRequestHandler):
             logging.warning("Garmin upload queue full, skipped weigh-in")
         except (KeyError, TypeError, ValueError, OverflowError):
             logging.warning("Could not parse scale weight for Garmin")
+
+
+def log_raw_response(path, response, raw):
+    body = bytes(raw)
+    encoding = response.headers.get("Content-Encoding", "").lower()
+    if encoding == "gzip" and len(body) <= RAW_LOG_LIMIT:
+        try:
+            with gzip.GzipFile(fileobj=BytesIO(body)) as stream:
+                body = stream.read(RAW_LOG_LIMIT + 1)
+            encoding = "decoded gzip"
+        except (OSError, EOFError, zlib.error):
+            pass
+    logging.info("Withings → Scale %s HTTP %s%s %r%s", path, response.status,
+                 f" ({encoding})" if encoding else "", body[:RAW_LOG_LIMIT],
+                 " [truncated]" if len(body) > RAW_LOG_LIMIT else "")
 
 
 def upload_pending(uploads, uploader):

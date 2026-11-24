@@ -44,7 +44,7 @@ Relay an original Withings WBS01's HTTP traffic to Withings and copy the weight 
 
 The bridge forwards Withings' HTTP status, headers, and body to the scale, then queues eligible weights from successful HTTP exchanges in memory for Garmin. A Garmin failure is logged and leaves the Withings exchange intact. The queue is lost on restart, and repeated scale requests can create duplicate Garmin readings. The bridge keeps no measurement database or files.
 
-For protocol troubleshooting, set `SCALE_CAPTURE=1` and `LOG_RAW=1` and recreate the container with `docker compose up -d`. Withings still receives the traffic. Garmin uploads are paused and logs can include measurements and device identifiers. Turn both flags off after troubleshooting. If the relay loses connectivity to Withings, restart it to refresh the public address.
+For protocol troubleshooting, set `LOG_RAW=1` and rebuild with `docker compose up -d --build`. This logs both the scale request body and the Withings response status and body, up to 64 KiB per body. The logs can contain names, profile details, identifiers, measurements, and session values. Redact those before sharing and turn raw logging off when finished. Set `SCALE_CAPTURE=1` if you also want to pause Garmin uploads while continuing to relay requests to Withings. If the relay loses connectivity to Withings, restart it to refresh the public address.
 
 To restore the original network path, remove the UniFi DNS override and run `docker compose down`.
 
