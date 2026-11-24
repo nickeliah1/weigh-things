@@ -1,0 +1,26 @@
+services:
+  bridge:
+    build: .
+    init: true
+    restart: unless-stopped
+    read_only: true
+    env_file: .env
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.weigh-things.rule=Host(`scalews.withings.net`)
+      - traefik.http.routers.weigh-things.entrypoints=web
+      - traefik.http.routers.weigh-things.priority=10001
+      - traefik.http.services.weigh-things.loadbalancer.server.port=8080
+    networks:
+      - proxy
+    environment:
+      - GARMIN_TOKEN_JSON
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  proxy:
+    external: true
+    name: traefik
